@@ -94,15 +94,18 @@ func (s *wardenFileService) Upload(destinationPath string, contents []byte) erro
 
 	tmpFilePath := filepath.Join("/tmp", destinationFileName)
 
+	// Debug: Check /tmp before and after StreamIn to understand what's happening
 	// Workaround for overlayfs race condition on Ubuntu Noble with cgroup v2.
 	// StreamIn may report success before the file is visible in /tmp due to
 	// filesystem sync issues with overlayfs upper layer. We sync and retry
 	// the move operation to ensure the file is visible.
 	script := fmt.Sprintf(
-		"sync; for i in 1 2 3 4 5; do [ -f %s ] && mv %s %s && exit 0; sleep 0.1; done; echo 'File not found after retries'; ls -la /tmp/; exit 1",
+		"sync; for i in $(seq 1 20); do [ -f %s ] && mv %s %s && exit 0; sleep 0.2; done; echo 'File not found after 20 retries (4 seconds)'; echo 'Looking for file: %s'; ls -la /tmp/; find /tmp -name '%s' 2>/dev/null || true; exit 1",
 		tmpFilePath,
 		tmpFilePath,
 		destinationPath,
+		tmpFilePath,
+		destinationFileName,
 	)
 
 	err = s.runPrivilegedScript(script)
