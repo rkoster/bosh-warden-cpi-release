@@ -93,9 +93,14 @@ func (s *wardenFileService) Upload(destinationPath string, contents []byte) erro
 	}
 
 	tmpFilePath := filepath.Join("/tmp", destinationFileName)
-	// Move settings file to its final location
+
+	// Workaround for overlayfs race condition on Ubuntu Noble with cgroup v2.
+	// StreamIn may report success before the file is visible in /tmp due to
+	// filesystem sync issues with overlayfs upper layer. We sync and retry
+	// the move operation to ensure the file is visible.
 	script := fmt.Sprintf(
-		"mv %s %s",
+		"sync; for i in 1 2 3 4 5; do [ -f %s ] && mv %s %s && exit 0; sleep 0.1; done; echo 'File not found after retries'; ls -la /tmp/; exit 1",
+		tmpFilePath,
 		tmpFilePath,
 		destinationPath,
 	)
