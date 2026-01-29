@@ -73,16 +73,17 @@ func (s *wardenFileService) Upload(destinationPath string, contents []byte) erro
 	s.logger.Debug(s.logTag, "Uploading file to %s", destinationPath)
 
 	destinationFileName := filepath.Base(destinationPath)
+	destinationDir := filepath.Dir(destinationPath)
 
-	// Stream in settings file to a temporary directory
-	// so that tar (running as vcap) has permission to unpack into dir.
+	// Stream directly to destination directory to avoid overlayfs issues
+	// with /tmp on Ubuntu Noble with cgroup v2.
 	tarReader, err := s.tarReader(destinationFileName, contents)
 	if err != nil {
 		return bosherr.WrapError(err, "Creating tar")
 	}
 
 	spec := wrdn.StreamInSpec{
-		Path:      "/tmp/",
+		Path:      destinationDir + "/",
 		User:      "root",
 		TarStream: tarReader,
 	}
@@ -92,25 +93,16 @@ func (s *wardenFileService) Upload(destinationPath string, contents []byte) erro
 		return bosherr.WrapError(err, "Streaming in tar")
 	}
 
-	tmpFilePath := filepath.Join("/tmp", destinationFileName)
-
-	// Debug: Check /tmp before and after StreamIn to understand what's happening
-	// Workaround for overlayfs race condition on Ubuntu Noble with cgroup v2.
-	// StreamIn may report success before the file is visible in /tmp due to
-	// filesystem sync issues with overlayfs upper layer. We sync and retry
-	// the move operation to ensure the file is visible.
+	// Verify the file exists with retries (for overlayfs sync issues)
 	script := fmt.Sprintf(
-		"sync; for i in $(seq 1 20); do [ -f %s ] && mv %s %s && exit 0; sleep 0.2; done; echo 'File not found after 20 retries (4 seconds)'; echo 'Looking for file: %s'; ls -la /tmp/; find /tmp -name '%s' 2>/dev/null || true; exit 1",
-		tmpFilePath,
-		tmpFilePath,
+		"sync; for i in $(seq 1 10); do [ -f %s ] && exit 0; sleep 0.2; done; echo 'File not found after 10 retries'; ls -la %s/; exit 1",
 		destinationPath,
-		tmpFilePath,
-		destinationFileName,
+		destinationDir,
 	)
 
 	err = s.runPrivilegedScript(script)
 	if err != nil {
-		return bosherr.WrapErrorf(err, "Moving temporary file to destination '%s'", destinationPath)
+		return bosherr.WrapErrorf(err, "Verifying file at destination '%s'", destinationPath)
 	}
 
 	return nil
